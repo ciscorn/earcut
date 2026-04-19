@@ -1,6 +1,16 @@
 use earcut::{deviation, Earcut};
 
 #[test]
+fn test_default() {
+    let mut earcut = Earcut::<f64>::default();
+    let data = [[0.0, 0.0], [100.0, 0.0], [100.0, 100.0], [0.0, 100.0]];
+    let hole_indices: &[u32] = &[];
+    let mut triangles = vec![];
+    earcut.earcut(data.iter().copied(), hole_indices, &mut triangles);
+    assert_eq!(triangles, vec![2, 3, 0, 0, 1, 2]);
+}
+
+#[test]
 fn test_empty() {
     let mut earcut = Earcut::new();
     let data: [[f64; 2]; 0] = [];

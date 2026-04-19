@@ -55,9 +55,11 @@ pub fn project3d_to_2d<T: Float>(
         // rotation
         let ax = -ny / dd;
         let ay = nx / dd;
-        let theta = nz.acos();
-        let sint = theta.sin();
-        let cost = theta.cos();
+        // For the unit normal (nx² + ny² + nz² = 1):
+        //   cos(acos(nz)) = nz
+        //   sin(acos(nz)) = sqrt(1 - nz²) = sqrt(nx² + ny²) = dd
+        let cost = nz;
+        let sint = dd;
         let s = ax * ay * (T::one() - cost);
         let t = ay * sint;
         let u = ax * sint;

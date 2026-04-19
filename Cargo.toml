@@ -1,19 +1,25 @@
 [package]
 name = "earcut"
-version = "0.4.5"
+version = "0.4.7"
 edition = "2024"
 description = "A Rust port of the Earcut polygon triangulation library"
 authors = ["Taku Fukada <naninunenor@gmail.com>"]
 license = "ISC"
 repository = "https://github.com/ciscorn/earcut-rs"
 categories = ["graphics", "science", "no-std"]
+include = [
+    "/src/**/*.rs",
+    "/LICENSE.txt",
+    "README.md",
+    "Cargo.toml",
+]
 
 [dependencies]
 num-traits = { version = "0.2" }
 
 [dev-dependencies]
-serde_json = { version = "1.0", features = ["float_roundtrip"] }
-serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1", features = ["float_roundtrip"] }
+serde = { version = "1", features = ["derive"] }
 criterion = "0.5"
 
 [[bench]]
