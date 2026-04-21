@@ -1325,3 +1325,76 @@ impl EarcutI32 {
         outer_node_i
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use alloc::vec;
+    use alloc::vec::Vec;
+
+    use super::{EarcutI32, deviation};
+
+    #[test]
+    fn deviation_is_zero_for_too_short_input() {
+        let data = [[0, 0], [10, 0]];
+
+        assert_eq!(deviation(data, &[] as &[u32], &[] as &[u32]), 0);
+    }
+
+    #[test]
+    fn clears_output_for_too_short_input() {
+        let data = [[0, 0], [10, 0]];
+        let mut earcut = EarcutI32::default();
+        let mut triangles = vec![99u32, 100, 101];
+
+        earcut.earcut(data, &[] as &[u32], &mut triangles);
+
+        assert!(triangles.is_empty());
+    }
+
+    #[test]
+    fn supports_u16_indices() {
+        let data = [[0, 0], [10, 0], [10, 10], [0, 10]];
+        let mut earcut = EarcutI32::new();
+        let mut triangles = Vec::<u16>::new();
+
+        earcut.earcut(data, &[] as &[u16], &mut triangles);
+
+        assert_eq!(triangles.len(), 6);
+        assert_eq!(deviation(data, &[] as &[u16], &triangles), 0);
+    }
+
+    #[test]
+    fn supports_usize_indices() {
+        let data = [[0, 0], [10, 0], [10, 10], [0, 10]];
+        let mut earcut = EarcutI32::new();
+        let mut triangles = Vec::<usize>::new();
+
+        earcut.earcut(data, &[] as &[usize], &mut triangles);
+
+        assert_eq!(triangles.len(), 6);
+        assert_eq!(deviation(data, &[] as &[usize], &triangles), 0);
+    }
+
+    #[test]
+    fn returns_empty_for_collapsed_outer_ring() {
+        let data = [[0, 0], [1, 0], [1, 0]];
+        let mut earcut = EarcutI32::new();
+        let mut triangles = Vec::<u32>::new();
+
+        earcut.earcut(data, &[] as &[u32], &mut triangles);
+
+        assert!(triangles.is_empty());
+    }
+
+    #[test]
+    fn ignores_empty_hole_ring() {
+        let data = [[0, 0], [10, 0], [0, 10]];
+        let mut earcut = EarcutI32::new();
+        let mut triangles = Vec::<u32>::new();
+
+        earcut.earcut(data, &[3u32], &mut triangles);
+
+        assert_eq!(triangles.len(), 3);
+        assert_eq!(deviation(data, &[] as &[u32], &triangles), 0);
+    }
+}
