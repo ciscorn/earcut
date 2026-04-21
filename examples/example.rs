@@ -1,3 +1,4 @@
+use earcut::int::EarcutI32;
 use earcut::{deviation, Earcut};
 
 use std::fs;
@@ -37,4 +38,14 @@ fn load_fixture(name: &str, num_triangles: usize, expected_deviation: f64) {
 
 fn main() {
     load_fixture("water", 2482, 0.0008);
+
+    // Force monomorphization of the integer path for asm inspection.
+    let mut e = EarcutI32::new();
+    let mut tri: Vec<u32> = vec![];
+    e.earcut(
+        [[0i32, 0], [10, 0], [10, 10], [0, 10]].iter().copied(),
+        &[][..],
+        &mut tri,
+    );
+    std::hint::black_box(&tri);
 }

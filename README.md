@@ -8,6 +8,7 @@ A Rust port of the [mapbox/earcut](https://github.com/mapbox/earcut) polygon tri
 
 - Based on the latest earcut 3.0.2 release.
 - Designed to avoid unnecessary memory allocations. Internal buffers and the output index vector can be reused across multiple triangulations.
+- Also provides `earcut::int::EarcutI32` for integer coordinates with exact integer predicates, but it can be slower than the float-based `Earcut` on modern CPUs.
 - An additional module, `utils3d`, can project 3D coplanar polygons onto a 2D plane before triangulation.
 - License: ISC
 
@@ -20,19 +21,19 @@ A Rust port of the [mapbox/earcut](https://github.com/mapbox/earcut) polygon tri
 
 Measured on a MacBook Pro (M1 Pro).
 
-| Polygon      | earcut.hpp  | earcut-rs (0.4.7) | earcutr (0.4.3) |
+| Polygon      | earcut.hpp  | earcut-rs (0.4.8) | earcutr (0.4.3) |
 |--------------|------------:|------------------:|----------------:|
-| bad_hole     |   3.55 µs/i |        2.664 µs/i |      4.415 µs/i |          
-| building     |    351 ns/i |          158 ns/i |        604 ns/i |
+| bad_hole     |   3.55 µs/i |        2.661 µs/i |      4.415 µs/i |          
+| building     |    351 ns/i |          154 ns/i |        604 ns/i |
 | degenerate   |    154 ns/i |           38 ns/i |        206 ns/i |
 | dude         |   5.25 µs/i |        4.408 µs/i |      8.096 µs/i |
-| empty_square |    202 ns/i |           63 ns/i |        331 ns/i |
-| water        |    423 µs/i |        394.8 µs/i |      801.3 µs/i |
-| water2       |    338 µs/i |        270.6 µs/i |      450.3 µs/i |
-| water3       |   13.6 µs/i |        12.66 µs/i |      23.46 µs/i |
-| water3b      |   1.28 µs/i |        1.067 µs/i |      2.165 µs/i |
-| water4       |   89.1 µs/i |        72.26 µs/i |      154.1 µs/i |
-| water_huge   |  7.240 ms/i |        7.459 ms/i |      10.90 ms/i |
-| water_huge2  |  15.86 ms/i |        16.57 ms/i |      22.35 ms/i |
+| empty_square |    202 ns/i |           64 ns/i |        331 ns/i |
+| water        |    423 µs/i |        395.8 µs/i |      801.3 µs/i |
+| water2       |    338 µs/i |        271.9 µs/i |      450.3 µs/i |
+| water3       |   13.6 µs/i |        12.70 µs/i |      23.46 µs/i |
+| water3b      |   1.28 µs/i |        1.049 µs/i |      2.165 µs/i |
+| water4       |   89.1 µs/i |        71.45 µs/i |      154.1 µs/i |
+| water_huge   |  7.240 ms/i |        7.378 ms/i |      10.90 ms/i |
+| water_huge2  |  15.86 ms/i |        16.22 ms/i |      22.35 ms/i |
 
-Note: earcutr 0.4.3 is not based on the latest mapbox/earcut release.
+Note: earcut.hpp and earcutr have not fully caught up with the latest mapbox/earcut.
