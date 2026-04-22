@@ -1,6 +1,6 @@
 # earcut-rs
 
-[![Test](https://github.com/ciscorn/earcut-rs/actions/workflows/Test.yml/badge.svg)](https://github.com/ciscorn/earcut-rs/actions/workflows/Test.yml)
+[![CI](https://github.com/ciscorn/earcut-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/ciscorn/earcut-rs/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/ciscorn/earcut-rs/graph/badge.svg?token=thKlQiVjLc)](https://codecov.io/gh/ciscorn/earcut-rs)
 [![Crates.io Version](https://img.shields.io/crates/v/earcut)](https://crates.io/crates/earcut)
 
