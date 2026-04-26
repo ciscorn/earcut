@@ -3,13 +3,39 @@
 #![no_std]
 extern crate alloc;
 
-pub mod int;
-pub mod utils3d;
-
 use alloc::vec::Vec;
 use core::{cmp::Ordering, num::NonZeroU32, ptr};
 
 use num_traits::float::Float;
+
+macro_rules! node {
+    ($self:ident.$nodes:ident, $offset:expr) => {
+        // SAFETY: all `NodeOffset`s used by this crate follow the invariant
+        // documented on `node_at`.
+        unsafe { $crate::node_at(&$self.$nodes, $offset) }
+    };
+    ($nodes:ident, $offset:expr) => {
+        // SAFETY: all `NodeOffset`s used by this crate follow the invariant
+        // documented on `node_at`.
+        unsafe { $crate::node_at($nodes, $offset) }
+    };
+}
+
+macro_rules! node_mut {
+    ($self:ident.$nodes:ident, $offset:expr) => {
+        // SAFETY: all `NodeOffset`s used by this crate follow the invariant
+        // documented on `node_at_mut`.
+        unsafe { $crate::node_at_mut(&mut $self.$nodes, $offset) }
+    };
+    ($nodes:ident, $offset:expr) => {
+        // SAFETY: all `NodeOffset`s used by this crate follow the invariant
+        // documented on `node_at_mut`.
+        unsafe { $crate::node_at_mut($nodes, $offset) }
+    };
+}
+
+pub mod int;
+pub mod utils3d;
 
 /// Index of a vertex
 pub trait Index: Copy {
@@ -41,46 +67,63 @@ impl Index for usize {
     }
 }
 
-macro_rules! node {
-    ($self:ident.$nodes:ident, $offset:expr) => {
-        unsafe {
-            let off = $offset.get() as usize;
-            debug_assert!(off % core::mem::size_of_val(&$self.$nodes[0]) == 0);
-            debug_assert!(off / core::mem::size_of_val(&$self.$nodes[0]) < $self.$nodes.len());
-            &*$self.$nodes.as_ptr().byte_add(off)
-        }
-    };
-    ($nodes:ident, $offset:expr) => {
-        unsafe {
-            let off = $offset.get() as usize;
-            debug_assert!(off % core::mem::size_of_val(&$nodes[0]) == 0);
-            debug_assert!(off / core::mem::size_of_val(&$nodes[0]) < $nodes.len());
-            &*$nodes.as_ptr().byte_add(off)
-        }
-    };
-}
-
-macro_rules! node_mut {
-    ($self:ident.$nodes:ident, $offset:expr) => {
-        unsafe {
-            let off = $offset.get() as usize;
-            debug_assert!(off % core::mem::size_of_val(&$self.$nodes[0]) == 0);
-            debug_assert!(off / core::mem::size_of_val(&$self.$nodes[0]) < $self.$nodes.len());
-            &mut *$self.$nodes.as_mut_ptr().byte_add(off)
-        }
-    };
-    ($nodes:ident, $offset:expr) => {
-        unsafe {
-            let off = $offset.get() as usize;
-            debug_assert!(off % core::mem::size_of_val(&$nodes[0]) == 0);
-            debug_assert!(off / core::mem::size_of_val(&$nodes[0]) < $nodes.len());
-            &mut *$nodes.as_mut_ptr().byte_add(off)
-        }
-    };
-}
-
-/// Byte offset (from `nodes` base pointer) of a `Node<T>` in the `nodes` Vec.
+/// Byte offset of a node in the nodes Vec.
+///
+/// Non-zero so `Option<NodeOffset>` keeps `Node` small.
 type NodeOffset = NonZeroU32;
+
+/// # Safety
+///
+/// `offset` must point to a valid element in `nodes`.
+///
+/// In this crate, this holds because:
+///
+/// - each offset is created with `node_offset::<N>` and is only used after its
+///   node has been appended.
+/// - nodes are only appended to the Vec and are never removed or reordered, so
+///   each offset keeps identifying the same node.
+/// - offsets are byte offsets, not raw pointers. Each access adds the offset to
+///   the current `nodes.as_ptr()`, so Vec reallocation does not make offsets
+///   invalid.
+/// - `node_offset` checks that the byte offset fits in `u32`.
+#[inline(always)]
+unsafe fn node_at<N>(nodes: &[N], offset: NodeOffset) -> &N {
+    let off = offset.get() as usize;
+    let stride = core::mem::size_of::<N>();
+    debug_assert!(stride > 0);
+    debug_assert!(off.is_multiple_of(stride));
+    debug_assert!(off / stride < nodes.len());
+    // SAFETY: the caller guarantees that `offset` is valid for `nodes`;
+    // see the safety contract above.
+    unsafe { &*nodes.as_ptr().byte_add(off) }
+}
+
+/// # Safety
+///
+/// `offset` must point to a valid element in `nodes`. See `node_at` for the
+/// full invariant.
+#[inline(always)]
+unsafe fn node_at_mut<N>(nodes: &mut [N], offset: NodeOffset) -> &mut N {
+    let off = offset.get() as usize;
+    let stride = core::mem::size_of::<N>();
+    debug_assert!(stride > 0);
+    debug_assert!(off.is_multiple_of(stride));
+    debug_assert!(off / stride < nodes.len());
+    // SAFETY: the caller guarantees that `offset` is valid for `nodes`;
+    // see the safety contract above.
+    unsafe { &mut *nodes.as_mut_ptr().byte_add(off) }
+}
+
+/// Creates a byte offset for a real node.
+///
+/// Index 0 is the dummy node, so real node offsets are non-zero.
+#[inline(always)]
+fn node_offset<N>(index: usize) -> NodeOffset {
+    let stride = core::mem::size_of::<N>();
+    assert!(index > 0 && index <= u32::MAX as usize / stride);
+    let byte_offset = (index * stride) as u32;
+    NodeOffset::new(byte_offset).unwrap()
+}
 
 const STEINER_BIT: u32 = 1 << 31;
 const INDEX_MASK: u32 = !STEINER_BIT;
@@ -110,14 +153,16 @@ struct LinkInfo {
 }
 
 impl<T: Float> Node<T> {
+    const PLACEHOLDER_OFFSET: NodeOffset =
+        NodeOffset::new(core::mem::size_of::<Self>() as u32).unwrap();
+
     fn new(i: u32, xy: [T; 2]) -> Self {
         debug_assert!(i & STEINER_BIT == 0);
-        let placeholder = unsafe { NodeOffset::new_unchecked(core::mem::size_of::<Self>() as u32) };
         Self {
             i_steiner: i,
             xy,
-            prev_i: placeholder,
-            next_i: placeholder,
+            prev_i: Self::PLACEHOLDER_OFFSET,
+            next_i: Self::PLACEHOLDER_OFFSET,
             z: 0,
             prev_z_i: None,
             next_z_i: None,
@@ -258,6 +303,7 @@ impl<T: Float> Earcut<T> {
 
     /// create a circular doubly linked list from polygon points in the specified winding order
     fn linked_list(&mut self, start: usize, end: usize, clockwise: bool) -> Option<NodeOffset> {
+        assert!(start <= end && end <= self.data.len());
         let mut last_i: Option<NodeOffset> = None;
         let iter = self.data[start..end].iter().enumerate();
 
@@ -318,8 +364,8 @@ impl<T: Float> Earcut<T> {
             }
             // when the left-most point of 2 holes meet at a vertex, sort the holes counterclockwise so that when we find
             // the bridge to the outer shell is always the point that they meet at.
-            let a = node!(self.nodes, ai);
-            let b = node!(self.nodes, bi);
+            let a = node!(self.nodes, *ai);
+            let b = node!(self.nodes, *bi);
             match a.xy[1].partial_cmp(&b.xy[1]) {
                 Some(Ordering::Equal) => {}
                 Some(ordering) => return ordering,
@@ -1000,9 +1046,8 @@ fn split_polygon<T: Float>(
     b_i: NodeOffset,
 ) -> NodeOffset {
     debug_assert!(!nodes.is_empty());
-    let stride = core::mem::size_of::<Node<T>>() as u32;
-    let a2_i = unsafe { NodeOffset::new_unchecked(nodes.len() as u32 * stride) };
-    let b2_i = unsafe { NodeOffset::new_unchecked((nodes.len() as u32 + 1) * stride) };
+    let a2_i = node_offset::<Node<T>>(nodes.len());
+    let b2_i = node_offset::<Node<T>>(nodes.len() + 1);
 
     let a = node_mut!(nodes, a_i);
     let mut a2 = Node::new(a.index(), a.xy);
@@ -1034,8 +1079,7 @@ fn insert_node<T: Float>(
     last: Option<NodeOffset>,
 ) -> NodeOffset {
     let mut p = Node::new(i, xy);
-    let stride = core::mem::size_of::<Node<T>>() as u32;
-    let p_i = unsafe { NodeOffset::new_unchecked(nodes.len() as u32 * stride) };
+    let p_i = node_offset::<Node<T>>(nodes.len());
     match last {
         Some(last_i) => {
             let last = node_mut!(nodes, last_i);
@@ -1131,6 +1175,7 @@ pub fn deviation<T: Float, N: Index>(
 
 /// check if a point lies within a convex triangle
 fn signed_area<T: Float>(data: &[[T; 2]], start: usize, end: usize) -> T {
+    assert!(end > 0 && start <= end && end <= data.len());
     let [mut bx, mut by] = data[end - 1];
     let mut sum = T::zero();
     for &[ax, ay] in &data[start..end] {
