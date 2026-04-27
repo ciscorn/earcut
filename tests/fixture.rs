@@ -1,39 +1,139 @@
-use earcut::{Earcut, deviation};
+use earcut::int::{EarcutI32, deviation as int_deviation};
+use earcut::{Earcut, deviation as float_deviation};
+
+type Coords = Vec<Vec<[f64; 2]>>;
+
+struct Fixture {
+    data_f: Vec<[f64; 2]>,
+    hole_indices: Vec<u32>,
+}
+
+fn parse_fixture(coords: &str) -> Fixture {
+    let rings = serde_json::from_str::<Coords>(coords).unwrap();
+    let data_f: Vec<[f64; 2]> = rings.iter().flatten().copied().collect();
+    let num_rings = rings.len();
+    let mut hole_indices = Vec::with_capacity(num_rings.saturating_sub(1));
+    let mut sum = 0u32;
+    for ring in rings.iter().take(num_rings.saturating_sub(1)) {
+        sum += ring.len() as u32;
+        hole_indices.push(sum);
+    }
+
+    Fixture {
+        data_f,
+        hole_indices,
+    }
+}
+
+fn as_i32_points(data: &[[f64; 2]]) -> Option<Vec<[i32; 2]>> {
+    let mut points = Vec::with_capacity(data.len());
+    for &[x, y] in data {
+        if x.fract() != 0.0 || y.fract() != 0.0 {
+            return None;
+        }
+        if !(i32::MIN as f64..=i32::MAX as f64).contains(&x)
+            || !(i32::MIN as f64..=i32::MAX as f64).contains(&y)
+        {
+            return None;
+        }
+        points.push([x as i32, y as i32]);
+    }
+    Some(points)
+}
 
 fn test_fixture(coords: &str, num_triangles: usize, expected_deviation: f64) {
-    // load JSON
-    type Coords = Vec<Vec<[f64; 2]>>;
-    let expected = serde_json::from_str::<Coords>(coords).unwrap();
+    let fixture = parse_fixture(coords);
 
-    // prepare input
-    let num_holes = expected.len();
-    let data: Vec<[f64; 2]> = expected.clone().into_iter().flatten().collect();
-    let hole_indices: Vec<_> = expected
-        .into_iter()
-        .map(|x| x.len() as u32)
-        .scan(0, |sum, e| {
-            *sum += e;
-            Some(*sum)
-        })
-        .take(num_holes - 1)
-        .collect();
-
-    // earcut
     let mut triangles = vec![];
     let mut earcut = Earcut::new();
-    earcut.earcut(data.iter().copied(), &hole_indices, &mut triangles);
-
-    // check
-    assert_eq!(
-        triangles.len(),
-        num_triangles * 3,
-        "{} {}",
-        triangles.len(),
-        num_triangles * 3
+    earcut.earcut(
+        fixture.data_f.iter().copied(),
+        &fixture.hole_indices,
+        &mut triangles,
     );
-    if !triangles.is_empty() {
-        assert!(deviation(data.iter().copied(), &hole_indices, &triangles) <= expected_deviation);
+
+    assert_eq!(triangles.len(), num_triangles * 3);
+    let f_deviation = if triangles.is_empty() {
+        0.0
+    } else {
+        float_deviation(
+            fixture.data_f.iter().copied(),
+            &fixture.hole_indices,
+            &triangles,
+        )
+    };
+    assert!(f_deviation <= expected_deviation);
+
+    check_int_fixture_if_applicable(&fixture, triangles.len(), f_deviation);
+}
+
+fn check_int_fixture_if_applicable(fixture: &Fixture, f_triangle_indices: usize, f_deviation: f64) {
+    let Some(data_i32) = as_i32_points(&fixture.data_f) else {
+        return;
+    };
+
+    let mut i32_triangles = vec![];
+    EarcutI32::new().earcut(
+        data_i32.iter().copied(),
+        &fixture.hole_indices,
+        &mut i32_triangles,
+    );
+
+    assert_eq!(
+        i32_triangles.len(),
+        f_triangle_indices,
+        "int index count differs from f64 reference"
+    );
+
+    let i_abs_dev = int_deviation(
+        data_i32.iter().copied(),
+        &fixture.hole_indices,
+        &i32_triangles,
+    );
+    let polygon_area = polygon_area2(&data_i32, &fixture.hole_indices);
+    if polygon_area == 0 {
+        assert_eq!(i_abs_dev, 0, "int deviation was non-zero for zero area");
+    } else {
+        let i_dev = i_abs_dev as f64 / polygon_area as f64;
+        assert!(
+            i_dev <= f_deviation + 1e-12,
+            "int deviation {i_dev} exceeded f64 deviation {f_deviation}"
+        );
     }
+}
+
+/// Returns twice the signed area of a polygon ring (shoelace, doubled).
+fn signed_area(data: &[[i32; 2]], start: usize, end: usize) -> i64 {
+    let mut area = 0i64;
+    let mut j = end - 1;
+    for i in start..end {
+        area += ((data[j][0] as i64) - (data[i][0] as i64))
+            * ((data[j][1] as i64) + (data[i][1] as i64));
+        j = i;
+    }
+    area
+}
+
+/// Returns twice the polygon area (outer minus holes); matches the scaling of
+/// the value returned by `int::deviation`.
+fn polygon_area2(data: &[[i32; 2]], hole_indices: &[u32]) -> i64 {
+    if data.len() < 3 {
+        return 0;
+    }
+    let outer_len = hole_indices.first().copied().unwrap_or(data.len() as u32) as usize;
+    let mut area = signed_area(data, 0, outer_len).abs();
+    for (i, &start) in hole_indices.iter().enumerate() {
+        let start = start as usize;
+        let end = if i + 1 < hole_indices.len() {
+            hole_indices[i + 1] as usize
+        } else {
+            data.len()
+        };
+        if end - start >= 3 {
+            area -= signed_area(data, start, end).abs();
+        }
+    }
+    area
 }
 
 #[test]
