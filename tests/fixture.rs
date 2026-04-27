@@ -91,6 +91,10 @@ fn check_int_fixture_if_applicable(fixture: &Fixture, f_triangle_indices: usize,
         &i32_triangles,
     );
     let polygon_area = polygon_area2(&data_i32, &fixture.hole_indices);
+    assert!(
+        polygon_area >= 0,
+        "holes exceeded outer ring area: {polygon_area}"
+    );
     if polygon_area == 0 {
         assert_eq!(i_abs_dev, 0, "int deviation was non-zero for zero area");
     } else {
