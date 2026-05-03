@@ -449,6 +449,9 @@ fn is_ear_hashed<'a>(
     let max_z = z_order(xy_max, min_x, min_y, shift);
 
     // look for points inside the triangle in increasing z-order
+    //
+    // Unlike the float version, we keep the bbox prefilter: the i32 comparisons are
+    // cheaper than i64 multiplications.
     let mut o_n = ear.next_z_i.map(|i| node!(nodes, i));
     while let Some(n) = o_n {
         if n.z > max_z {
@@ -997,11 +1000,8 @@ fn remove_node(nodes: &mut [Node], pl: LinkInfo) -> (NodeOffset, NodeOffset) {
 
 #[inline]
 fn input_bbox(data: &[[i32; 2]]) -> InputBbox {
-    let Some((&first, rest)) = data.split_first() else {
-        panic!("input bbox requires a non-empty ring");
-    };
-    let mut bbox = InputBbox::new(first);
-    for &xy in rest {
+    let mut bbox = InputBbox::new(data[0]);
+    for &xy in &data[1..] {
         bbox.update(xy);
     }
     bbox
@@ -1120,6 +1120,17 @@ impl EarcutI32 {
             self.data.len()
         };
 
+        let Some(mut outer_node_i) = self.linked_list(0, outer_len, true) else {
+            return;
+        };
+        let outer_node = node!(self.nodes, outer_node_i);
+        if outer_node.next_i == outer_node.prev_i {
+            return;
+        }
+        if has_holes {
+            outer_node_i = self.eliminate_holes(hole_indices, outer_node_i);
+        }
+
         let mut min_x = 0i32;
         let mut min_y = 0i32;
         let mut shift = NO_HASH;
@@ -1138,17 +1149,6 @@ impl EarcutI32 {
             if !has_holes && shift == NO_HASH {
                 small_path = use_small_path(range_x, range_y);
             }
-        }
-
-        let Some(mut outer_node_i) = self.linked_list(0, outer_len, true) else {
-            return;
-        };
-        let outer_node = node!(self.nodes, outer_node_i);
-        if outer_node.next_i == outer_node.prev_i {
-            return;
-        }
-        if has_holes {
-            outer_node_i = self.eliminate_holes(hole_indices, outer_node_i);
         }
 
         earcut_linked(
