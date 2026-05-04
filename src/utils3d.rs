@@ -1,3 +1,5 @@
+//! Helpers for projecting 3D coplanar polygons onto a 2D plane
+
 use alloc::vec::Vec;
 use num_traits::float::Float;
 
@@ -32,6 +34,13 @@ fn normal<T: Float>(vertices: &[[T; 3]]) -> Option<[T; 3]> {
     Some([sum[0] / d, sum[1] / d, sum[2] / d])
 }
 
+/// Projects a coplanar 3D polygon onto a 2D plane.
+///
+/// The plane is derived from the normal of the outer ring
+/// (`vertices[0..num_outer]`).
+///
+/// Returns `false` if the outer ring has fewer than three vertices, or if
+/// its normal is degenerate (e.g. all points are collinear).
 pub fn project3d_to_2d<T: Float>(
     vertices: &[[T; 3]],
     num_outer: usize,
