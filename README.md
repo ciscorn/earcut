@@ -18,24 +18,24 @@ A Rust port of the [mapbox/earcut](https://github.com/mapbox/earcut) polygon tri
 
 ## Benchmarks
 
-Measured on a MacBook Pro (M1 Pro).
+Time per iteration (smaller is better). Measured on a MacBook Pro (M1 Pro).
 
-| Polygon      | earcut.hpp (C++) | earcut (Rust) | earcutr (Rust) |
-|--------------|-----------------:|--------------:|---------------:|
-| bad_hole     |        3.53 µs/i |    2.712 µs/i |     4.415 µs/i |
-| building     |         351 ns/i |      157 ns/i |       604 ns/i |
-| degenerate   |         153 ns/i |       41 ns/i |       206 ns/i |
-| dude         |        5.21 µs/i |    4.204 µs/i |     8.096 µs/i |
-| empty_square |         201 ns/i |       67 ns/i |       331 ns/i |
-| water        |         420 µs/i |    345.8 µs/i |     801.3 µs/i |
-| water2       |         338 µs/i |    249.7 µs/i |     450.3 µs/i |
-| water3       |        13.5 µs/i |    11.91 µs/i |     23.46 µs/i |
-| water3b      |        1.27 µs/i |    1.087 µs/i |     2.165 µs/i |
-| water4       |        88.9 µs/i |    67.40 µs/i |     154.1 µs/i |
-| water_huge   |       6.674 ms/i |    7.059 ms/i |     10.90 ms/i |
-| water_huge2  |       15.23 ms/i |    14.82 ms/i |     22.35 ms/i |
+| Polygon      | earcut.hpp (C++) | earcut (Rust) |
+|--------------|-----------------:|--------------:|
+| bad_hole     |        3.53 µs/i |    2.712 µs/i |
+| building     |         351 ns/i |      157 ns/i |
+| degenerate   |         153 ns/i |       41 ns/i |
+| dude         |        5.21 µs/i |    4.204 µs/i |
+| empty_square |         201 ns/i |       67 ns/i |
+| water        |         420 µs/i |    345.8 µs/i |
+| water2       |         338 µs/i |    249.7 µs/i |
+| water3       |        13.5 µs/i |    11.91 µs/i |
+| water3b      |        1.27 µs/i |    1.087 µs/i |
+| water4       |        88.9 µs/i |    67.40 µs/i |
+| water_huge   |       6.674 ms/i |    7.059 ms/i |
+| water_huge2  |       15.23 ms/i |    14.82 ms/i |
 
-Note: [earcut.hpp](https://github.com/mapbox/earcut.hpp) and [earcutr](https://github.com/frewsxcv/earcutr) have not fully caught up with the latest [mapbox/earcut](https://github.com/mapbox/earcut).
+Note: [earcut.hpp](https://github.com/mapbox/earcut.hpp) has not fully caught up with the latest [mapbox/earcut](https://github.com/mapbox/earcut).
 
 ## License
 
