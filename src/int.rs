@@ -1110,7 +1110,7 @@ impl EarcutI32 {
         }
         assert!(self.data.len() <= INDEX_MASK as usize + 1);
 
-        triangles_out.reserve(self.data.len() * 3);
+        triangles_out.reserve(self.data.len().saturating_mul(3));
         self.reset(self.data.len() / 2 * 3);
 
         let has_holes = !hole_indices.is_empty();
