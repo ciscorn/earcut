@@ -1109,7 +1109,7 @@ pub fn deviation<T: Float, N: Index>(
         true => hole_indices[0].into_usize(),
         false => data.len(),
     };
-    let polygon_area = if data.len() < 3 {
+    let polygon_area = if data.len() < 3 || outer_len < 3 {
         T::zero()
     } else {
         let mut polygon_area = signed_area(&data[..outer_len]).abs();
