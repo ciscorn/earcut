@@ -50,6 +50,7 @@ const F64_FIXTURES: &[(&str, &[&[[f64; 2]]])] = &[
     ("water4", WATER4),
     ("water-huge", WATER_HUGE),
     ("water-huge2", WATER_HUGE2),
+    ("water-huge3", WATER_HUGE3),
 ];
 
 /// Subset of `F64_FIXTURES` that are integer-representable (every bench we
@@ -66,6 +67,7 @@ const INT_FIXTURES: &[(&str, &[&[[f64; 2]]])] = &[
     ("water4", WATER4),
     ("water-huge", WATER_HUGE),
     ("water-huge2", WATER_HUGE2),
+    ("water-huge3", WATER_HUGE3),
 ];
 
 fn bench(c: &mut Criterion) {

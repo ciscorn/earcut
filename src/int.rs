@@ -8,24 +8,23 @@ use core::{cmp::Ordering, num::NonZeroU32, ptr};
 
 use crate::node_offset;
 
+/// Largest permitted absolute coordinate value on each axis.
+const MAX_ABS_COORD: i32 = 1 << 19;
+
+#[inline(always)]
+fn cmp_products(a: i64, b: i64, c: i64, d: i64) -> Ordering {
+    (a * b).cmp(&(c * d))
+}
+
 #[inline(always)]
 fn use_small_path(range_x: i64, range_y: i64) -> bool {
-    range_x == 0
-        || range_y == 0
-        || (range_x <= i32::MAX as i64
-            && range_y <= i32::MAX as i64
-            && range_x * range_y <= i32::MAX as i64)
+    range_x <= i32::MAX as i64 && range_y <= i32::MAX as i64 && range_x * range_y <= i32::MAX as i64
 }
 
 #[inline(always)]
 fn shift_for_z_order(range: i64) -> u32 {
     let used = i64::BITS - range.leading_zeros();
     used.saturating_sub(15)
-}
-
-#[inline(always)]
-fn wide_sign(v: i64) -> i32 {
-    (v > 0) as i32 - (v < 0) as i32
 }
 
 #[inline(always)]
@@ -60,7 +59,7 @@ impl Index for u16 {
         self as usize
     }
     fn from_usize(v: usize) -> Self {
-        v as Self
+        Self::try_from(v).expect("EarcutI32 vertex index does not fit in u16")
     }
 }
 impl Index for usize {
@@ -75,6 +74,15 @@ impl Index for usize {
 /// Returns the absolute integer difference between the polygon area (times 2)
 /// and its triangulation area (times 2) for `i32` coordinates. Zero indicates
 /// an exact match; non-zero signals a triangulation error.
+///
+/// Coordinates must lie within the same domain as [`EarcutI32::earcut`]
+/// (`[-2^19, 2^19]`), which keeps the `i64` area accumulation exact for any
+/// valid triangulation.
+///
+/// # Panics
+///
+/// Panics if a hole index or triangle vertex index is out of bounds, or hole
+/// indices are not monotonically non-decreasing.
 pub fn deviation<N: Index>(
     data: impl IntoIterator<Item = [i32; 2]>,
     hole_indices: &[N],
@@ -114,10 +122,10 @@ pub fn deviation<N: Index>(
         let a = a.into_usize();
         let b = b.into_usize();
         let c = c.into_usize();
-        let v = ((data[a][0] as i64) - (data[c][0] as i64))
-            * ((data[b][1] as i64) - (data[a][1] as i64))
-            - ((data[a][0] as i64) - (data[b][0] as i64))
-                * ((data[c][1] as i64) - (data[a][1] as i64));
+        let v = (i64::from(data[a][0]) - i64::from(data[c][0]))
+            * (i64::from(data[b][1]) - i64::from(data[a][1]))
+            - (i64::from(data[a][0]) - i64::from(data[b][0]))
+                * (i64::from(data[c][1]) - i64::from(data[a][1]));
         triangles_area += v.abs();
     }
     if polygon_area < triangles_area {
@@ -130,12 +138,16 @@ pub fn deviation<N: Index>(
 /// signed area of a polygon ring (twice the geometric area)
 fn signed_area(data: &[[i32; 2]]) -> i64 {
     debug_assert!(!data.is_empty());
+    let [ox, oy] = data[0];
     let [last_x, last_y] = data[data.len() - 1];
-    let [mut bx, mut by] = [last_x as i64, last_y as i64];
+    let [mut bx, mut by] = [
+        i64::from(last_x) - i64::from(ox),
+        i64::from(last_y) - i64::from(oy),
+    ];
     let mut sum = 0;
     for &[ax_r, ay_r] in data {
-        let ax = ax_r as i64;
-        let ay = ay_r as i64;
+        let ax = i64::from(ax_r) - i64::from(ox);
+        let ay = i64::from(ay_r) - i64::from(oy);
         sum += (bx - ax) * (ay + by);
         (bx, by) = (ax, ay);
     }
@@ -173,6 +185,107 @@ struct LinkInfo {
     next_i: NodeOffset,
     prev_z_i: Option<NodeOffset>,
     next_z_i: Option<NodeOffset>,
+}
+
+const HOLE_BLOCK_SIZE: usize = 16;
+
+struct HoleBlockIndex {
+    bboxes: Vec<[i32; 4]>,
+    heads: Vec<NodeOffset>,
+    stops: Vec<NodeOffset>,
+}
+
+impl HoleBlockIndex {
+    fn new() -> Self {
+        Self {
+            bboxes: Vec::new(),
+            heads: Vec::new(),
+            stops: Vec::new(),
+        }
+    }
+
+    fn reset(&mut self, max_nodes: usize, num_holes: usize) {
+        self.bboxes.clear();
+        self.heads.clear();
+        self.stops.clear();
+
+        let indexed_nodes = max_nodes.saturating_add(num_holes.saturating_mul(2));
+        let max_blocks = indexed_nodes
+            .div_ceil(HOLE_BLOCK_SIZE)
+            .saturating_add(num_holes)
+            .saturating_add(2);
+        self.bboxes.reserve(max_blocks);
+        self.heads.reserve(max_blocks);
+        self.stops.reserve(max_blocks);
+    }
+
+    fn index_segment(&mut self, nodes: &mut [Node], head_i: NodeOffset, stop_i: NodeOffset) {
+        let mut p_i = head_i;
+        loop {
+            let block = self.bboxes.len();
+            self.heads.push(p_i);
+
+            let mut min_x = i32::MAX;
+            let mut min_y = i32::MAX;
+            let mut max_x = i32::MIN;
+            let mut max_y = i32::MIN;
+            let mut count = 0;
+
+            loop {
+                let p = node!(nodes, p_i);
+                let (next_i, [x, y]) = (p.next_i, p.xy);
+                let [next_x, next_y] = node!(nodes, next_i).xy;
+                node_mut!(nodes, p_i).z = i32::try_from(block).expect("too many hole index blocks");
+
+                min_x = min_x.min(x).min(next_x);
+                min_y = min_y.min(y).min(next_y);
+                max_x = max_x.max(x).max(next_x);
+                max_y = max_y.max(y).max(next_y);
+
+                p_i = next_i;
+                count += 1;
+                if count == HOLE_BLOCK_SIZE || p_i == stop_i {
+                    break;
+                }
+            }
+
+            self.bboxes.push([min_x, min_y, max_x, max_y]);
+            self.stops.push(p_i);
+            if p_i == stop_i {
+                break;
+            }
+        }
+    }
+
+    fn grow(&mut self, block: usize, [x, y]: [i32; 2]) {
+        let bbox = &mut self.bboxes[block];
+        bbox[0] = bbox[0].min(x);
+        bbox[1] = bbox[1].min(y);
+        bbox[2] = bbox[2].max(x);
+        bbox[3] = bbox[3].max(y);
+    }
+
+    fn live_head(&mut self, nodes: &[Node], block: usize) -> NodeOffset {
+        let mut head_i = self.heads[block];
+        let mut prev_i = node!(nodes, head_i).prev_i;
+        while node!(nodes, prev_i).next_i != head_i {
+            head_i = node!(nodes, head_i).next_i;
+            prev_i = node!(nodes, head_i).prev_i;
+        }
+        self.heads[block] = head_i;
+        head_i
+    }
+
+    fn live_stop(&mut self, nodes: &[Node], block: usize) -> NodeOffset {
+        let mut stop_i = self.stops[block];
+        let mut prev_i = node!(nodes, stop_i).prev_i;
+        while node!(nodes, prev_i).next_i != stop_i {
+            stop_i = node!(nodes, stop_i).next_i;
+            prev_i = node!(nodes, stop_i).prev_i;
+        }
+        self.stops[block] = stop_i;
+        stop_i
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -245,13 +358,6 @@ impl Node {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Pass {
-    P0 = 0,
-    P1 = 1,
-    P2 = 2,
-}
-
 /// main ear slicing loop which triangulates a polygon (given as a linked list)
 #[allow(clippy::too_many_arguments)]
 fn earcut_linked<N: Index>(
@@ -263,16 +369,17 @@ fn earcut_linked<N: Index>(
     shift: u32,
     small_path: bool,
     sort_queue: &mut Vec<(i32, NodeOffset)>,
-    pass: Pass,
+    sort_scratch: &mut Vec<(i32, NodeOffset)>,
 ) {
     let mut ear_i = ear_i;
 
     // interlink polygon nodes in z-order
-    if pass == Pass::P0 && shift != NO_HASH {
-        index_curve(nodes, ear_i, min_x, min_y, shift, sort_queue);
+    if shift != NO_HASH {
+        index_curve(nodes, ear_i, min_x, min_y, shift, sort_queue, sort_scratch);
     }
 
     let mut stop_i = ear_i;
+    let mut cured = false;
 
     loop {
         let ear = node!(nodes, ear_i);
@@ -290,7 +397,7 @@ fn earcut_linked<N: Index>(
         };
         if is_ear {
             let next_i = next.index();
-            let next_next_i = next.next_i;
+            let next_node_i = ear.next_i;
 
             triangles.extend([
                 N::from_usize(prev.index() as usize),
@@ -301,45 +408,38 @@ fn earcut_linked<N: Index>(
             let ll = ear.link_info();
             remove_node(nodes, ll);
 
-            (ear_i, stop_i) = (next_next_i, next_next_i);
+            (ear_i, stop_i) = (next_node_i, next_node_i);
             continue;
         }
 
         ear_i = ni;
         if ear_i == stop_i {
-            if pass == Pass::P0 {
-                ear_i = filter_points(nodes, ear_i, None);
-                earcut_linked(
-                    nodes,
-                    ear_i,
-                    triangles,
-                    min_x,
-                    min_y,
-                    shift,
-                    small_path,
-                    sort_queue,
-                    Pass::P1,
-                );
-            } else if pass == Pass::P1 {
-                let filtered = filter_points(nodes, ear_i, None);
-                ear_i = cure_local_intersections(nodes, filtered, triangles);
-                earcut_linked(
-                    nodes,
-                    ear_i,
-                    triangles,
-                    min_x,
-                    min_y,
-                    shift,
-                    small_path,
-                    sort_queue,
-                    Pass::P2,
-                );
-            } else {
-                split_earcut(
-                    nodes, ear_i, triangles, min_x, min_y, shift, small_path, sort_queue,
-                );
+            let (filtered_i, filtered_out) = filter_points(nodes, ear_i, None, None);
+            ear_i = filtered_i;
+            if filtered_out {
+                stop_i = ear_i;
+                continue;
             }
-            return;
+
+            if !cured {
+                ear_i = cure_local_intersections::<N>(nodes, ear_i, triangles);
+                stop_i = ear_i;
+                cured = true;
+                continue;
+            }
+
+            split_earcut::<N>(
+                nodes,
+                ear_i,
+                triangles,
+                min_x,
+                min_y,
+                shift,
+                small_path,
+                sort_queue,
+                sort_scratch,
+            );
+            break;
         }
     }
 }
@@ -448,11 +548,44 @@ fn is_ear_hashed<'a>(
     let min_z = z_order(xy_min, min_x, min_y, shift);
     let max_z = z_order(xy_max, min_x, min_y, shift);
 
-    // look for points inside the triangle in increasing z-order
+    // Walk both z-order directions interleaved: the two pointer chases are
+    // independent, so the CPU keeps two loads in flight instead of one on
+    // this latency-bound traversal. Any hit returns immediately, so the visit
+    // order does not change the result.
     //
     // Unlike the float version, we keep the bbox prefilter: the i32 comparisons are
     // cheaper than i64 multiplications.
     let mut o_n = ear.next_z_i.map(|i| node!(nodes, i));
+    let mut o_p = ear.prev_z_i.map(|i| node!(nodes, i));
+    while let (Some(n), Some(p)) = (o_n, o_p) {
+        if n.z > max_z || p.z < min_z {
+            break;
+        }
+        if ((n.xy[0] >= xy_min[0])
+            & (n.xy[0] <= xy_max[0])
+            & (n.xy[1] >= xy_min[1])
+            & (n.xy[1] <= xy_max[1]))
+            && (!ptr::eq(n, a) && !ptr::eq(n, c))
+            && point_in_triangle_except_first(a.xy, b.xy, c.xy, n.xy)
+            && area(node!(nodes, n.prev_i), n, node!(nodes, n.next_i)) >= 0
+        {
+            return (false, a, c);
+        }
+        if ((p.xy[0] >= xy_min[0])
+            & (p.xy[0] <= xy_max[0])
+            & (p.xy[1] >= xy_min[1])
+            & (p.xy[1] <= xy_max[1]))
+            && (!ptr::eq(p, a) && !ptr::eq(p, c))
+            && point_in_triangle_except_first(a.xy, b.xy, c.xy, p.xy)
+            && area(node!(nodes, p.prev_i), p, node!(nodes, p.next_i)) >= 0
+        {
+            return (false, a, c);
+        }
+        o_n = n.next_z_i.map(|i| node!(nodes, i));
+        o_p = p.prev_z_i.map(|i| node!(nodes, i));
+    }
+
+    // drain the remaining increasing z-order side
     while let Some(n) = o_n {
         if n.z > max_z {
             break;
@@ -470,8 +603,7 @@ fn is_ear_hashed<'a>(
         o_n = n.next_z_i.map(|i| node!(nodes, i));
     }
 
-    // look for points inside the triangle in decreasing z-order
-    let mut o_p = ear.prev_z_i.map(|i| node!(nodes, i));
+    // drain the remaining decreasing z-order side
     while let Some(p) = o_p {
         if p.z < min_z {
             break;
@@ -499,6 +631,7 @@ fn cure_local_intersections<N: Index>(
     triangles: &mut Vec<N>,
 ) -> NodeOffset {
     let mut p_i = start_i;
+    let mut cured = false;
     loop {
         let p = node!(nodes, p_i);
         let p_next_i = p.next_i;
@@ -508,7 +641,7 @@ fn cure_local_intersections<N: Index>(
         let b = node!(nodes, b_i);
 
         if !equals(a, b)
-            && intersects(a, p, p_next, b)
+            && intersects(a, p, p_next, b, false)
             && locally_inside(nodes, a, b)
             && locally_inside(nodes, b, a)
         {
@@ -524,12 +657,17 @@ fn cure_local_intersections<N: Index>(
             remove_node(nodes, pnl);
 
             (p_i, start_i) = (b_next_i, b_i);
+            cured = true;
         } else {
             p_i = p.next_i;
         }
 
         if p_i == start_i {
-            return filter_points(nodes, p_i, None);
+            return if cured {
+                filter_points(nodes, p_i, None, None).0
+            } else {
+                p_i
+            };
         }
     }
 }
@@ -545,6 +683,7 @@ fn split_earcut<N: Index>(
     shift: u32,
     small_path: bool,
     sort_queue: &mut Vec<(i32, NodeOffset)>,
+    sort_scratch: &mut Vec<(i32, NodeOffset)>,
 ) {
     // look for a valid diagonal that divides the polygon into two
     let mut ai = start_i;
@@ -563,12 +702,12 @@ fn split_earcut<N: Index>(
 
                 // filter colinear points around the cuts
                 let end_i = Some(node!(nodes, ai).next_i);
-                ai = filter_points(nodes, ai, end_i);
+                ai = filter_points(nodes, ai, end_i, None).0;
                 let end_i = Some(node!(nodes, ci).next_i);
-                ci = filter_points(nodes, ci, end_i);
+                ci = filter_points(nodes, ci, end_i, None).0;
 
                 // run earcut on each half
-                earcut_linked(
+                earcut_linked::<N>(
                     nodes,
                     ai,
                     triangles,
@@ -577,9 +716,9 @@ fn split_earcut<N: Index>(
                     shift,
                     small_path,
                     sort_queue,
-                    Pass::P0,
+                    sort_scratch,
                 );
-                earcut_linked(
+                earcut_linked::<N>(
                     nodes,
                     ci,
                     triangles,
@@ -588,7 +727,7 @@ fn split_earcut<N: Index>(
                     shift,
                     small_path,
                     sort_queue,
-                    Pass::P0,
+                    sort_scratch,
                 );
                 return;
             }
@@ -611,15 +750,15 @@ fn index_curve(
     min_y: i32,
     shift: u32,
     order: &mut Vec<(i32, NodeOffset)>,
+    scratch: &mut Vec<(i32, NodeOffset)>,
 ) {
     order.clear();
     let mut p_i = start_i;
     let mut p = node_mut!(nodes, p_i);
 
     loop {
-        if p.z == 0 {
-            p.z = z_order(p.xy, min_x, min_y, shift);
-        }
+        // `z` temporarily holds the hole block id during hole elimination.
+        p.z = z_order(p.xy, min_x, min_y, shift);
         order.push((p.z, p_i));
         p_i = p.next_i;
         p = node_mut!(nodes, p_i);
@@ -628,7 +767,7 @@ fn index_curve(
         }
     }
 
-    order.sort_unstable_by_key(|&(z, _)| z);
+    crate::sort_by_z(order, scratch);
 
     for idx in 0..order.len() {
         let prev_z_i = if idx > 0 {
@@ -678,17 +817,20 @@ fn is_valid_diagonal(nodes: &[Node], a: &Node, b: &Node, a_next: &Node, a_prev: 
                 && area(b_prev, b, b_next) > 0)
 }
 
-/// check if two segments intersect
-fn intersects(p1: &Node, q1: &Node, p2: &Node, q2: &Node) -> bool {
-    let o1 = wide_sign(area(p1, q1, p2));
-    let o2 = wide_sign(area(p1, q1, q2));
-    let o3 = wide_sign(area(p2, q2, p1));
-    let o4 = wide_sign(area(p2, q2, q1));
-    ((o1 != o2) & (o3 != o4)) // general case
-        || (o3 == 0 && on_segment(p2, p1, q2)) // p2, q2 and p1 are collinear and p1 lies on p2q2
-        || (o4 == 0 && on_segment(p2, q1, q2)) // p2, q2 and q1 are collinear and q1 lies on p2q2
-        || (o2 == 0 && on_segment(p1, q2, q1)) // p1, q1 and q2 are collinear and q2 lies on p1q1
-        || (o1 == 0 && on_segment(p1, p2, q1)) // p1, q1 and p2 are collinear and p2 lies on p1q1
+/// check if two segments intersect; optionally include collinear boundary touches
+fn intersects(p1: &Node, q1: &Node, p2: &Node, q2: &Node, include_boundary: bool) -> bool {
+    let o1 = area(p1, q1, p2);
+    let o2 = area(p1, q1, q2);
+    let o3 = area(p2, q2, p1);
+    let o4 = area(p2, q2, q1);
+    let proper =
+        ((o1 > 0 && o2 < 0) || (o1 < 0 && o2 > 0)) && ((o3 > 0 && o4 < 0) || (o3 < 0 && o4 > 0));
+    proper
+        || include_boundary
+            && ((o3 == 0 && on_segment(p2, p1, q2))
+                || (o4 == 0 && on_segment(p2, q1, q2))
+                || (o2 == 0 && on_segment(p1, q2, q1))
+                || (o1 == 0 && on_segment(p1, p2, q1)))
 }
 
 /// check if a polygon diagonal intersects any polygon segments
@@ -713,7 +855,7 @@ fn intersects_polygon(nodes: &[Node], a: &Node, b: &Node) -> bool {
             && px1 >= x0
             && py0 <= y1
             && py1 >= y0
-            && intersects(p, p_next, a, b)
+            && intersects(p, p_next, a, b, true)
         {
             return true;
         }
@@ -726,19 +868,23 @@ fn intersects_polygon(nodes: &[Node], a: &Node, b: &Node) -> bool {
 
 /// check if the middle point of a polygon diagonal is inside the polygon
 fn middle_inside(nodes: &[Node], a: &Node, b: &Node) -> bool {
-    let two_px = a.xy[0] as i64 + b.xy[0] as i64;
-    let two_py = a.xy[1] as i64 + b.xy[1] as i64;
+    // Every product below combines coordinates with coefficients that sum to
+    // zero (e.g. `a.x + b.x - 2*p.x`), so each factor is bounded by the
+    // coordinate range and the products stay exact in `i64` (see the domain
+    // note on `EarcutI32::earcut`).
+    let two_px = i64::from(a.xy[0]) + i64::from(b.xy[0]);
+    let two_py = i64::from(a.xy[1]) + i64::from(b.xy[1]);
     let mut p = a;
     let mut inside = false;
     loop {
         let p_next = node!(nodes, p.next_i);
-        let py_doubled = p.xy[1] as i64 + p.xy[1] as i64;
-        let pn_py_doubled = p_next.xy[1] as i64 + p_next.xy[1] as i64;
+        let py_doubled = i64::from(p.xy[1]) * 2;
+        let pn_py_doubled = i64::from(p_next.xy[1]) * 2;
         let crosses = (py_doubled > two_py) != (pn_py_doubled > two_py) && p_next.xy[1] != p.xy[1];
         if crosses {
-            let dy = p_next.xy[1] as i64 - p.xy[1] as i64;
-            let dx = p_next.xy[0] as i64 - p.xy[0] as i64;
-            let lhs = (two_px - (p.xy[0] as i64 + p.xy[0] as i64)) * dy;
+            let dy = i64::from(p_next.xy[1]) - i64::from(p.xy[1]);
+            let dx = i64::from(p_next.xy[0]) - i64::from(p.xy[0]);
+            let lhs = (two_px - i64::from(p.xy[0]) * 2) * dy;
             let rhs = dx * (two_py - py_doubled);
             // px < intersect ↔ lhs < rhs (if dy > 0) or lhs > rhs (if dy < 0)
             let px_lt_intersect = if dy > 0 { lhs < rhs } else { lhs > rhs };
@@ -753,22 +899,36 @@ fn middle_inside(nodes: &[Node], a: &Node, b: &Node) -> bool {
     }
 }
 
+#[inline(always)]
+fn ray_intersection_x(p: [i32; 2], next: [i32; 2], y: i32) -> (i64, i64) {
+    let den = i64::from(p[1]) - i64::from(next[1]);
+    debug_assert!(den > 0);
+    let num = i64::from(p[0]) * den
+        + (i64::from(p[1]) - i64::from(y)) * (i64::from(next[0]) - i64::from(p[0]));
+    (num, den)
+}
+
 /// find a bridge between vertices that connects hole with an outer ring and and link it
 fn eliminate_hole(
     nodes: &mut Vec<Node>,
     hole_i: NodeOffset,
     outer_node_i: NodeOffset,
+    blocks: &mut HoleBlockIndex,
 ) -> NodeOffset {
-    let Some(bridge_i) = find_hole_bridge(nodes, node!(nodes, hole_i), outer_node_i) else {
+    let Some(bridge_i) = find_hole_bridge(nodes, node!(nodes, hole_i), outer_node_i, blocks) else {
         return outer_node_i;
     };
     let bridge_reverse_i = split_polygon(nodes, bridge_i, hole_i);
 
+    let bridge2_i = node!(nodes, bridge_reverse_i).next_i;
+    let stop_i = node!(nodes, bridge2_i).next_i;
+    blocks.index_segment(nodes, bridge_i, stop_i);
+
     // filter collinear points around the cuts
     let end_i = Some(node!(nodes, bridge_reverse_i).next_i);
-    filter_points(nodes, bridge_reverse_i, end_i);
+    filter_points(nodes, bridge_reverse_i, end_i, Some(blocks));
     let end_i = Some(node!(nodes, bridge_i).next_i);
-    filter_points(nodes, bridge_i, end_i)
+    filter_points(nodes, bridge_i, end_i, Some(blocks)).0
 }
 
 /// check if a polygon diagonal is locally inside the polygon
@@ -783,110 +943,127 @@ fn locally_inside(nodes: &[Node], a: &Node, b: &Node) -> bool {
 }
 
 /// David Eberly's algorithm for finding a bridge between hole and outer polygon
-fn find_hole_bridge(nodes: &[Node], hole: &Node, outer_node_i: NodeOffset) -> Option<NodeOffset> {
-    let mut p_i = outer_node_i;
-    let mut qx: i64 = i64::MIN;
+fn find_hole_bridge(
+    nodes: &[Node],
+    hole: &Node,
+    outer_node_i: NodeOffset,
+    blocks: &mut HoleBlockIndex,
+) -> Option<NodeOffset> {
+    // Best ray/segment crossing as an exact fraction `(num, den)`, `den > 0`.
+    let mut qx: Option<(i64, i64)> = None;
     let mut m_i: Option<NodeOffset> = None;
+    let [hx, hy] = hole.xy;
 
     // find a segment intersected by a ray from the hole's leftmost point to the left;
     // segment's endpoint with lesser x will be potential connection point
     // unless they intersect at a vertex, then choose the vertex
-    let mut p = node!(nodes, p_i);
-    if equals(hole, p) {
-        return Some(p_i);
+    if equals(hole, node!(nodes, outer_node_i)) {
+        return Some(outer_node_i);
     }
-    let hole_x_w = hole.xy[0] as i64;
-    let hole_y_w = hole.xy[1] as i64;
-    loop {
-        let p_next = node!(nodes, p.next_i);
-        if equals(hole, p_next) {
-            return Some(p.next_i);
+    for block in 0..blocks.bboxes.len() {
+        let [min_x, min_y, max_x, max_y] = blocks.bboxes[block];
+        if hy < min_y
+            || hy > max_y
+            || min_x > hx
+            || qx.is_some_and(|(n, d)| n >= i64::from(max_x) * d)
+        {
+            continue;
         }
-        if hole.xy[1] <= p.xy[1] && hole.xy[1] >= p_next.xy[1] && p_next.xy[1] != p.xy[1] {
-            // p.y >= hole.y >= p_next.y and p.y != p_next.y, so denom > 0:
-            //   x = p.x + (p.y - hole.y) * (p_next.x - p.x) / (p.y - p_next.y)
-            let p_x_w = p.xy[0] as i64;
-            let p_y_w = p.xy[1] as i64;
-            let denom = p_y_w - p_next.xy[1] as i64; // > 0
-            let offset_scaled = (p_y_w - hole_y_w) * (p_next.xy[0] as i64 - p_x_w);
-            let x = p_x_w + offset_scaled / denom; // Rust's i64/i128 div truncates toward 0
-            if x <= hole_x_w && x > qx {
-                qx = x;
-                m_i = Some(if p.xy[0] < p_next.xy[0] {
-                    p_i
-                } else {
-                    p.next_i
-                });
-                // Exact "hole lies on segment" check (avoids the precision loss
-                // introduced by the integer division above):
-                //   (hole.y - p.y) * (p_next.x - p.x) == (hole.x - p.x) * (p_next.y - p.y)
-                let lhs = (hole_y_w - p_y_w) * (p_next.xy[0] as i64 - p_x_w);
-                let rhs = (hole_x_w - p_x_w) * (p_next.xy[1] as i64 - p_y_w);
-                if lhs == rhs {
-                    // hole touches outer segment; pick leftmost endpoint
-                    return m_i;
+
+        let stop_i = blocks.live_stop(nodes, block);
+        let mut p_i = blocks.live_head(nodes, block);
+        loop {
+            let p = node!(nodes, p_i);
+            let next_i = p.next_i;
+            let p_next = node!(nodes, next_i);
+            let live = node!(nodes, p.prev_i).next_i == p_i;
+            if live {
+                if equals(hole, p_next) {
+                    return Some(next_i);
+                }
+                if hy <= p.xy[1] && hy >= p_next.xy[1] && p_next.xy[1] != p.xy[1] {
+                    // Exact fractional ray/segment intersection avoids the rounding
+                    // that a truncating integer division would introduce, which
+                    // can otherwise pick a non-visible bridge on sheared inputs.
+                    let (x_num, x_den) = ray_intersection_x(p.xy, p_next.xy, hy);
+                    let hx_scaled = i64::from(hx) * x_den;
+                    if x_num <= hx_scaled && qx.is_none_or(|(n, d)| x_num * d > n * x_den) {
+                        qx = Some((x_num, x_den));
+                        m_i = Some(if p.xy[0] < p_next.xy[0] { p_i } else { next_i });
+                        if x_num == hx_scaled {
+                            // hole touches outer segment; pick leftmost endpoint
+                            return m_i;
+                        }
+                    }
                 }
             }
+            p_i = next_i;
+            if p_i == stop_i {
+                break;
+            }
         }
-        p_i = p.next_i;
-        if p_i == outer_node_i {
-            break;
-        }
-        p = p_next;
     }
 
     let mut m_i = m_i?;
+    let (qx_num, qx_den) = qx.expect("a bridge endpoint requires a ray intersection");
 
     // look for points inside the triangle of hole point, segment intersection and endpoint;
     // if there are no points found, we have a valid connection;
     // otherwise choose the point of the minimum angle with the ray as connection point
 
-    let stop_i = m_i;
     let mut m = node!(nodes, m_i);
     let mxmy = m.xy;
     // `tan_min` as (|dy|, dx) — represents +infinity while dx == 0.
     let mut tan_min_abs_dy: i64 = 1;
     let mut tan_min_dx: i64 = 0;
 
-    p_i = m_i;
-    let mut p = m;
+    let triangle_min_y = hy.min(mxmy[1]);
+    let triangle_max_y = hy.max(mxmy[1]);
 
-    let qx_t = qx as i32;
+    for block in 0..blocks.bboxes.len() {
+        let [min_x, min_y, max_x, max_y] = blocks.bboxes[block];
+        if max_x < mxmy[0] || min_x > hx || max_y < triangle_min_y || min_y > triangle_max_y {
+            continue;
+        }
 
-    let (tri_a, tri_c) = if hole.xy[1] < mxmy[1] {
-        ([hole.xy[0], hole.xy[1]], [qx_t, hole.xy[1]])
-    } else {
-        ([qx_t, hole.xy[1]], [hole.xy[0], hole.xy[1]])
-    };
-
-    loop {
-        if (((hole.xy[0] >= p.xy[0]) & (p.xy[0] >= mxmy[0])) && hole.xy[0] != p.xy[0])
-            && point_in_triangle(tri_a, mxmy, tri_c, p.xy)
-        {
-            // tan = |hole.y - p.y| / (hole.x - p.x),  denom > 0 here.
-            // Compare via cross-product so we never have to divide:
-            //   tan <=> tan_min  ↔  abs_dy * tan_min_dx <=> tan_min_abs_dy * dx
-            let abs_dy = i64::abs(hole_y_w - p.xy[1] as i64);
-            let dx = hole_x_w - p.xy[0] as i64; // > 0
-            let cmp = (abs_dy * tan_min_dx).cmp(&(tan_min_abs_dy * dx));
-            if locally_inside(nodes, p, hole)
-                && (cmp.is_lt()
-                    || (cmp.is_eq()
-                        && (p.xy[0] > m.xy[0]
-                            || (p.xy[0] == m.xy[0] && sector_contains_sector(nodes, m, p)))))
+        let stop_i = blocks.live_stop(nodes, block);
+        let mut p_i = blocks.live_head(nodes, block);
+        loop {
+            let p = node!(nodes, p_i);
+            let next_i = p.next_i;
+            let live = node!(nodes, p.prev_i).next_i == p_i;
+            if live
+                && hx >= p.xy[0]
+                && p.xy[0] >= mxmy[0]
+                && hx != p.xy[0]
+                && point_in_bridge_triangle([hx, hy], mxmy, qx_num, qx_den, p.xy)
             {
-                (m_i, m) = (p_i, p);
-                tan_min_abs_dy = abs_dy;
-                tan_min_dx = dx;
+                // `tan` cross products are differences bounded by the 2^30 range,
+                // so this comparison stays exact in i64.
+                let abs_dy = i64::from(hy).abs_diff(i64::from(p.xy[1])) as i64;
+                let dx = i64::from(hx) - i64::from(p.xy[0]);
+                let cmp = (abs_dy * tan_min_dx).cmp(&(tan_min_abs_dy * dx));
+                let p_next = node!(nodes, next_i);
+                if (locally_inside(nodes, p, hole)
+                    || (p.xy[1] == hy && p_next.xy[1] == hy && p_next.xy[0] > hx))
+                    && (cmp.is_lt()
+                        || (cmp.is_eq()
+                            && (p.xy[0] > m.xy[0]
+                                || (p.xy[0] == m.xy[0] && sector_contains_sector(nodes, m, p)))))
+                {
+                    (m_i, m) = (p_i, p);
+                    tan_min_abs_dy = abs_dy;
+                    tan_min_dx = dx;
+                }
+            }
+            p_i = next_i;
+            if p_i == stop_i {
+                break;
             }
         }
-
-        p_i = p.next_i;
-        if p_i == stop_i {
-            return Some(m_i);
-        }
-        p = node!(nodes, p_i);
     }
+
+    Some(m_i)
 }
 
 /// whether sector in vertex m contains sector in vertex p in the same coordinates
@@ -896,27 +1073,44 @@ fn sector_contains_sector(nodes: &[Node], m: &Node, p: &Node) -> bool {
 }
 
 /// eliminate colinear or duplicate points
-fn filter_points(nodes: &mut [Node], start_i: NodeOffset, end_i: Option<NodeOffset>) -> NodeOffset {
+fn filter_points(
+    nodes: &mut [Node],
+    start_i: NodeOffset,
+    end_i: Option<NodeOffset>,
+    mut blocks: Option<&mut HoleBlockIndex>,
+) -> (NodeOffset, bool) {
+    let full = end_i.is_none();
     let mut end_i = end_i.unwrap_or(start_i);
+    let mut filtered_out = false;
 
     let mut p_i = start_i;
-    let mut p = node!(nodes, p_i);
     loop {
+        let p = node!(nodes, p_i);
         let p_next = node!(nodes, p.next_i);
-        if !p.is_steiner() && (equals(p, p_next) || area(node!(nodes, p.prev_i), p, p_next) == 0) {
-            let (prev_i, next_i) = remove_node(nodes, p.link_info());
-            (p_i, end_i) = (prev_i, prev_i);
-            if p_i == next_i {
-                return end_i;
+        let mut again = false;
+        if p_i != p.next_i
+            && !p.is_steiner()
+            && (equals(p, p_next) || area(node!(nodes, p.prev_i), p, p_next) == 0)
+        {
+            if full || p_i == end_i {
+                end_i = p.prev_i;
             }
-            p = node!(nodes, p_i);
-        } else {
+            filtered_out = true;
+            if let Some(blocks) = blocks.as_deref_mut() {
+                let prev = node!(nodes, p.prev_i);
+                blocks.grow(prev.z as usize, p_next.xy);
+            }
+            let (prev_i, _) = remove_node(nodes, p.link_info());
+            p_i = prev_i;
+            again = true;
+        } else if full || p_i != end_i {
             p_i = p.next_i;
-            if p_i == end_i {
-                return end_i;
-            }
-            p = p_next;
-        };
+            again = !full;
+        }
+
+        if !again && p_i == end_i {
+            return (end_i, filtered_out);
+        }
     }
 }
 
@@ -1028,13 +1222,56 @@ fn z_order(xy: [i32; 2], min_x: i32, min_y: i32, shift: u32) -> i32 {
 }
 
 fn point_in_triangle(a: [i32; 2], b: [i32; 2], c: [i32; 2], p: [i32; 2]) -> bool {
-    let (ax, ay) = (a[0] as i64, a[1] as i64);
-    let (bx, by) = (b[0] as i64, b[1] as i64);
-    let (cx, cy) = (c[0] as i64, c[1] as i64);
-    let (px, py) = (p[0] as i64, p[1] as i64);
-    ((cx - px) * (ay - py) >= (ax - px) * (cy - py))
-        && ((ax - px) * (by - py) >= (bx - px) * (ay - py))
-        && ((bx - px) * (cy - py) >= (cx - px) * (by - py))
+    let (ax, ay) = (i64::from(a[0]), i64::from(a[1]));
+    let (bx, by) = (i64::from(b[0]), i64::from(b[1]));
+    let (cx, cy) = (i64::from(c[0]), i64::from(c[1]));
+    let (px, py) = (i64::from(p[0]), i64::from(p[1]));
+    cmp_products(cx - px, ay - py, ax - px, cy - py).is_ge()
+        && cmp_products(ax - px, by - py, bx - px, ay - py).is_ge()
+        && cmp_products(bx - px, cy - py, cx - px, by - py).is_ge()
+}
+
+/// Point-in-triangle test where one triangle vertex has an exact fractional
+/// x-coordinate `num / den` (the ray/segment intersection). Used only by
+/// [`find_hole_bridge`]. Within the `[-2^19, 2^19]` domain the fractional
+/// orientations stay exact in `i64`.
+fn point_in_bridge_triangle(
+    hole: [i32; 2],
+    bridge: [i32; 2],
+    num: i64,
+    den: i64,
+    p: [i32; 2],
+) -> bool {
+    if hole[1] < bridge[1] {
+        orient_i32(hole, bridge, p) >= 0
+            && orient_i32_to_frac(bridge, num, den, hole[1], p) >= 0
+            && orient_frac_to_i32(num, den, hole[1], hole, p) >= 0
+    } else {
+        orient_frac_to_i32(num, den, hole[1], bridge, p) >= 0
+            && orient_i32(bridge, hole, p) >= 0
+            && orient_i32_to_frac(hole, num, den, hole[1], p) >= 0
+    }
+}
+
+fn orient_i32(a: [i32; 2], b: [i32; 2], p: [i32; 2]) -> i64 {
+    (i64::from(b[0]) - i64::from(a[0])) * (i64::from(p[1]) - i64::from(a[1]))
+        - (i64::from(b[1]) - i64::from(a[1])) * (i64::from(p[0]) - i64::from(a[0]))
+}
+
+/// Orientation of triangle `(a, (num/den, b_y), p)`, scaled by `den > 0`
+/// (which preserves sign).
+fn orient_i32_to_frac(a: [i32; 2], num: i64, den: i64, b_y: i32, p: [i32; 2]) -> i64 {
+    let dx_b = num - i64::from(a[0]) * den;
+    let dx_p = i64::from(p[0]) - i64::from(a[0]);
+    dx_b * (i64::from(p[1]) - i64::from(a[1])) - (i64::from(b_y) - i64::from(a[1])) * dx_p * den
+}
+
+/// Orientation of triangle `((num/den, a_y), b, p)`, scaled by `den > 0`
+/// (which preserves sign).
+fn orient_frac_to_i32(num: i64, den: i64, a_y: i32, b: [i32; 2], p: [i32; 2]) -> i64 {
+    let dx_b = i64::from(b[0]) * den - num;
+    let dx_p = i64::from(p[0]) * den - num;
+    dx_b * (i64::from(p[1]) - i64::from(a_y)) - (i64::from(b[1]) - i64::from(a_y)) * dx_p
 }
 
 fn point_in_triangle_except_first(a: [i32; 2], b: [i32; 2], c: [i32; 2], p: [i32; 2]) -> bool {
@@ -1042,11 +1279,15 @@ fn point_in_triangle_except_first(a: [i32; 2], b: [i32; 2], c: [i32; 2], p: [i32
 }
 
 /// signed area of a triangle (twice the geometric area)
-fn area(p: &Node, q: &Node, r: &Node) -> i64 {
-    let (px, py) = (p.xy[0] as i64, p.xy[1] as i64);
-    let (qx, qy) = (q.xy[0] as i64, q.xy[1] as i64);
-    let (rx, ry) = (r.xy[0] as i64, r.xy[1] as i64);
-    (qy - py) * (rx - qx) - (qx - px) * (ry - qy)
+fn area(p: &Node, q: &Node, r: &Node) -> i8 {
+    let (px, py) = (i64::from(p.xy[0]), i64::from(p.xy[1]));
+    let (qx, qy) = (i64::from(q.xy[0]), i64::from(q.xy[1]));
+    let (rx, ry) = (i64::from(r.xy[0]), i64::from(r.xy[1]));
+    match cmp_products(qy - py, rx - qx, qx - px, ry - qy) {
+        Ordering::Less => -1,
+        Ordering::Equal => 0,
+        Ordering::Greater => 1,
+    }
 }
 
 /// check if two points are equal
@@ -1066,6 +1307,8 @@ pub struct EarcutI32 {
     nodes: Vec<Node>,
     queue: Vec<(NodeOffset, i32)>,
     sort_queue: Vec<(i32, NodeOffset)>,
+    sort_scratch: Vec<(i32, NodeOffset)>,
+    hole_blocks: HoleBlockIndex,
 }
 
 impl Default for EarcutI32 {
@@ -1082,6 +1325,8 @@ impl EarcutI32 {
             nodes: Vec::new(),
             queue: Vec::new(),
             sort_queue: Vec::new(),
+            sort_scratch: Vec::new(),
+            hole_blocks: HoleBlockIndex::new(),
         }
     }
 
@@ -1093,11 +1338,17 @@ impl EarcutI32 {
 
     /// Performs earcut triangulation on `i32` coordinates.
     ///
+    /// # Domain
+    ///
+    /// Every coordinate must lie within `[-2^19, 2^19]` on both axes.
+    ///
     /// # Panics
     ///
+    /// - if any coordinate lies outside `[-2^19, 2^19]`.
     /// - if `hole_indices` contains a value greater than the number of
     ///   vertices in `data`, or is not monotonically non-decreasing.
-    /// - if the input has more than 2^31 vertices
+    /// - if a vertex index cannot be represented by the output index type.
+    /// - if the internal node storage exceeds the `u32` byte-offset capacity
     pub fn earcut<N: Index>(
         &mut self,
         data: impl IntoIterator<Item = [i32; 2]>,
@@ -1107,6 +1358,37 @@ impl EarcutI32 {
         self.data.clear();
         self.data.extend(data);
         triangles_out.clear();
+
+        let mut previous_hole = 0;
+        for &hole in hole_indices {
+            let hole = hole.into_usize();
+            assert!(
+                hole <= self.data.len(),
+                "EarcutI32 hole index {hole} exceeds vertex count {}",
+                self.data.len()
+            );
+            assert!(
+                hole >= previous_hole,
+                "EarcutI32 hole indices are not monotonically non-decreasing"
+            );
+            previous_hole = hole;
+        }
+
+        if self.data.is_empty() {
+            return;
+        }
+        let bbox = input_bbox(&self.data);
+        assert!(
+            bbox.min_x >= -MAX_ABS_COORD
+                && bbox.max_x <= MAX_ABS_COORD
+                && bbox.min_y >= -MAX_ABS_COORD
+                && bbox.max_y <= MAX_ABS_COORD,
+            "EarcutI32 coordinate out of range: bbox ({}, {})..=({}, {}) exceeds [-2^19, 2^19]",
+            bbox.min_x,
+            bbox.min_y,
+            bbox.max_x,
+            bbox.max_y
+        );
         if self.data.len() < 3 {
             return;
         }
@@ -1114,7 +1396,15 @@ impl EarcutI32 {
 
         triangles_out.reserve(self.data.len().saturating_mul(3));
         self.reset(self.data.len() / 2 * 3);
+        self.run::<N>(hole_indices, triangles_out, bbox);
+    }
 
+    fn run<N: Index>(
+        &mut self,
+        hole_indices: &[N],
+        triangles_out: &mut Vec<N>,
+        full_bbox: InputBbox,
+    ) {
         let has_holes = !hole_indices.is_empty();
         let outer_len = if has_holes {
             hole_indices[0].into_usize()
@@ -1130,7 +1420,7 @@ impl EarcutI32 {
             return;
         }
         if has_holes {
-            outer_node_i = self.eliminate_holes(hole_indices, outer_node_i);
+            outer_node_i = self.eliminate_holes::<N>(hole_indices, outer_node_i);
         }
 
         let mut min_x = 0i32;
@@ -1139,11 +1429,15 @@ impl EarcutI32 {
         let mut small_path = false;
         let need_bbox = self.data.len() > 80 || !has_holes;
         if need_bbox {
-            let bbox = input_bbox(&self.data[..outer_len]);
+            let bbox = if has_holes {
+                input_bbox(&self.data[..outer_len])
+            } else {
+                full_bbox
+            };
             min_x = bbox.min_x;
             min_y = bbox.min_y;
-            let range_x = (bbox.max_x as i64) - (bbox.min_x as i64);
-            let range_y = (bbox.max_y as i64) - (bbox.min_y as i64);
+            let range_x = i64::from(bbox.max_x) - i64::from(bbox.min_x);
+            let range_y = i64::from(bbox.max_y) - i64::from(bbox.min_y);
             let range = range_x.max(range_y);
             if self.data.len() > 80 && range > 0 {
                 shift = shift_for_z_order(range);
@@ -1153,7 +1447,7 @@ impl EarcutI32 {
             }
         }
 
-        earcut_linked(
+        earcut_linked::<N>(
             &mut self.nodes,
             outer_node_i,
             triangles_out,
@@ -1162,7 +1456,7 @@ impl EarcutI32 {
             shift,
             small_path,
             &mut self.sort_queue,
-            Pass::P0,
+            &mut self.sort_scratch,
         );
     }
 
@@ -1230,17 +1524,22 @@ impl EarcutI32 {
             }
             let a_next = node!(self.nodes, a.next_i);
             let b_next = node!(self.nodes, b.next_i);
-            let ady = (a_next.xy[1] as i64) - (a.xy[1] as i64);
-            let adx = (a_next.xy[0] as i64) - (a.xy[0] as i64);
-            let bdy = (b_next.xy[1] as i64) - (b.xy[1] as i64);
-            let bdx = (b_next.xy[0] as i64) - (b.xy[0] as i64);
+            let ady = i64::from(a_next.xy[1]) - i64::from(a.xy[1]);
+            let adx = i64::from(a_next.xy[0]) - i64::from(a.xy[0]);
+            let bdy = i64::from(b_next.xy[1]) - i64::from(b.xy[1]);
+            let bdx = i64::from(b_next.xy[0]) - i64::from(b.xy[0]);
             (ady * bdx).cmp(&(bdy * adx))
         });
 
-        for &(q, _) in &self.queue {
-            outer_node_i = eliminate_hole(&mut self.nodes, q, outer_node_i);
+        self.hole_blocks.reset(self.data.len(), hole_indices.len());
+        self.hole_blocks
+            .index_segment(&mut self.nodes, outer_node_i, outer_node_i);
+
+        for i in 0..self.queue.len() {
+            let q = self.queue[i].0;
+            outer_node_i = eliminate_hole(&mut self.nodes, q, outer_node_i, &mut self.hole_blocks);
         }
-        outer_node_i
+        filter_points(&mut self.nodes, outer_node_i, None, None).0
     }
 }
 

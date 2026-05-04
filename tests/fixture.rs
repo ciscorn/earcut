@@ -104,13 +104,62 @@ fn check_int_fixture_if_applicable(fixture: &Fixture, f_triangle_indices: usize,
     }
 }
 
+#[test]
+fn fixture_rotations_preserve_exact_coverage() {
+    // These converted upstream fixtures have exact zero deviation, so rotating
+    // them should preserve both float and integer coverage.
+    let fixtures = [
+        ("earcut", EARCUT),
+        ("issue147", ISSUE147),
+        ("self-tangent-1", SELF_TANGENT_1),
+        ("self-tangent-2", SELF_TANGENT_2),
+        ("self-tangent-3", SELF_TANGENT_3),
+        ("self-tangent-4", SELF_TANGENT_4),
+        ("water-huge3", WATER_HUGE3),
+    ];
+
+    for (name, rings) in fixtures {
+        let fixture = build_fixture(rings);
+        for quarter_turns in 1..=3 {
+            let data_f = fixture
+                .data_f
+                .iter()
+                .map(|&[x, y]| match quarter_turns {
+                    1 => [y, -x],
+                    2 => [-x, -y],
+                    3 => [-y, x],
+                    _ => unreachable!(),
+                })
+                .collect::<Vec<_>>();
+            let rotated = Fixture {
+                data_f,
+                hole_indices: fixture.hole_indices.clone(),
+            };
+
+            let mut triangles = Vec::new();
+            Earcut::new().earcut(
+                rotated.data_f.iter().copied(),
+                &rotated.hole_indices,
+                &mut triangles,
+            );
+            let deviation = float_deviation(
+                rotated.data_f.iter().copied(),
+                &rotated.hole_indices,
+                &triangles,
+            );
+            assert_eq!(deviation, 0.0, "{name}, quarter turn {quarter_turns}",);
+            check_int_fixture_if_applicable(&rotated, triangles.len(), deviation);
+        }
+    }
+}
+
 /// Returns twice the signed area of a polygon ring (shoelace, doubled).
-fn signed_area(data: &[[i32; 2]], start: usize, end: usize) -> i64 {
-    let mut area = 0i64;
+fn signed_area(data: &[[i32; 2]], start: usize, end: usize) -> i128 {
+    let mut area = 0i128;
     let mut j = end - 1;
     for i in start..end {
-        area += ((data[j][0] as i64) - (data[i][0] as i64))
-            * ((data[j][1] as i64) + (data[i][1] as i64));
+        area += (i128::from(data[j][0]) - i128::from(data[i][0]))
+            * (i128::from(data[j][1]) + i128::from(data[i][1]));
         j = i;
     }
     area
@@ -118,7 +167,7 @@ fn signed_area(data: &[[i32; 2]], start: usize, end: usize) -> i64 {
 
 /// Returns twice the polygon area (outer minus holes); matches the scaling of
 /// the value returned by `int::deviation`.
-fn polygon_area2(data: &[[i32; 2]], hole_indices: &[u32]) -> i64 {
+fn polygon_area2(data: &[[i32; 2]], hole_indices: &[u32]) -> i128 {
     if data.len() < 3 {
         return 0;
     }
@@ -149,13 +198,18 @@ fn fixture_dude() {
 }
 
 #[test]
+fn fixture_earcut() {
+    test_fixture(EARCUT, 548, 0.0);
+}
+
+#[test]
 fn fixture_water1() {
-    test_fixture(WATER, 2482, 0.0008);
+    test_fixture(WATER, 2482, 0.0009);
 }
 
 #[test]
 fn fixture_water2() {
-    test_fixture(WATER2, 1212, 0.0);
+    test_fixture(WATER2, 1211, 0.0);
 }
 
 #[test]
@@ -175,12 +229,17 @@ fn fixture_water4() {
 
 #[test]
 fn fixture_water_huge1() {
-    test_fixture(WATER_HUGE, 5176, 0.0011);
+    test_fixture(WATER_HUGE, 5174, 0.0018);
 }
 
 #[test]
 fn fixture_water_huge2() {
-    test_fixture(WATER_HUGE2, 4462, 0.004);
+    test_fixture(WATER_HUGE2, 4484, 0.003);
+}
+
+#[test]
+fn fixture_water_huge3() {
+    test_fixture(WATER_HUGE3, 15470, 0.0);
 }
 
 #[test]
@@ -215,12 +274,12 @@ fn fixture_steiner() {
 
 #[test]
 fn fixture_issue29() {
-    test_fixture(ISSUE29, 40, 2e-15);
+    test_fixture(ISSUE29, 40, 1e-15);
 }
 
 #[test]
 fn fixture_issue34() {
-    test_fixture(ISSUE34, 139, 0.0);
+    test_fixture(ISSUE34, 138, 0.0);
 }
 
 #[test]
@@ -230,7 +289,27 @@ fn fixture_issue35() {
 
 #[test]
 fn fixture_self_touching() {
-    test_fixture(SELF_TOUCHING, 124, 2e-13);
+    test_fixture(SELF_TOUCHING, 124, 1e-13);
+}
+
+#[test]
+fn fixture_self_tangent_1() {
+    test_fixture(SELF_TANGENT_1, 23, 0.0);
+}
+
+#[test]
+fn fixture_self_tangent_2() {
+    test_fixture(SELF_TANGENT_2, 25, 0.0);
+}
+
+#[test]
+fn fixture_self_tangent_3() {
+    test_fixture(SELF_TANGENT_3, 174, 0.0);
+}
+
+#[test]
+fn fixture_self_tangent_4() {
+    test_fixture(SELF_TANGENT_4, 3082, 0.0);
 }
 
 #[test]
@@ -295,12 +374,12 @@ fn fixture_eberly_3() {
 
 #[test]
 fn fixture_eberly_6() {
-    test_fixture(EBERLY_6, 1429, 2e-14);
+    test_fixture(EBERLY_6, 1428, 2e-15);
 }
 
 #[test]
 fn fixture_issue52() {
-    test_fixture(ISSUE52, 109, 0.0);
+    test_fixture(ISSUE52, 108, 0.0);
 }
 
 #[test]
@@ -391,6 +470,11 @@ fn fixture_issue149() {
 #[test]
 fn fixture_issue142() {
     test_fixture(ISSUE142, 4, 0.13);
+}
+
+#[test]
+fn fixture_issue147() {
+    test_fixture(ISSUE147, 30, 0.0);
 }
 
 #[test]

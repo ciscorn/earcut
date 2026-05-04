@@ -1,4 +1,4 @@
-use earcut::{Earcut, deviation};
+use earcut::{Earcut, Refiner, deviation};
 use eframe::egui::{
     self, Align2, Color32, FontId, Pos2, Rect, Sense, Shape, Stroke, StrokeKind, Vec2,
 };
@@ -92,8 +92,10 @@ struct Visualizer {
     selected: usize,
     rings: Vec<Vec<[f64; 2]>>,
     triangulation: Triangulation,
+    refiner: Refiner,
     view_bbox: Bbox,
     active_vertex: Option<VertexRef>,
+    refinement: bool,
     show_fill: bool,
     show_mesh: bool,
     show_rings: bool,
@@ -111,14 +113,23 @@ impl Visualizer {
             .position(|(name, _)| *name == "building")
             .unwrap_or(0);
         let rings = rings_of(selected);
-        let triangulation = Triangulation::new(fixtures::FIXTURES[selected].0, &rings);
+        let mut refiner = Refiner::new();
+        let refinement = false;
+        let triangulation = Triangulation::new(
+            fixtures::FIXTURES[selected].0,
+            &rings,
+            refinement,
+            &mut refiner,
+        );
         let view_bbox = triangulation.bbox;
         Self {
             selected,
             rings,
             triangulation,
+            refiner,
             view_bbox,
             active_vertex: None,
+            refinement,
             show_fill: true,
             show_mesh: true,
             show_rings: true,
@@ -141,7 +152,12 @@ impl Visualizer {
     }
 
     fn retriangulate(&mut self) {
-        self.triangulation = Triangulation::new(fixtures::FIXTURES[self.selected].0, &self.rings);
+        self.triangulation = Triangulation::new(
+            fixtures::FIXTURES[self.selected].0,
+            &self.rings,
+            self.refinement,
+            &mut self.refiner,
+        );
     }
 
     fn draw_canvas(&mut self, ui: &mut egui::Ui) {
@@ -353,6 +369,17 @@ impl eframe::App for Visualizer {
             .resizable(false)
             .default_size(190.0)
             .show_inside(ui, |ui| {
+                ui.heading("Triangulation");
+                ui.add_space(6.0);
+                if ui
+                    .checkbox(&mut self.refinement, "Delaunay refinement")
+                    .on_hover_text("Apply Lawson edge flips after earcut")
+                    .changed()
+                {
+                    self.retriangulate();
+                }
+
+                ui.separator();
                 ui.heading("View");
                 ui.add_space(6.0);
                 egui::widgets::global_theme_preference_buttons(ui);
@@ -385,6 +412,10 @@ impl eframe::App for Visualizer {
                 ui.label(format!("steiner: {steiner_count}"));
                 ui.label(format!("vertices: {}", t.data.len()));
                 ui.label(format!("triangles: {}", t.triangles.len() / 3));
+                ui.label(format!(
+                    "refinement: {}",
+                    if self.refinement { "on" } else { "off" }
+                ));
                 ui.label(format!("deviation: {:.6e}", t.deviation));
                 if self.show_indices && t.data.len() > INDEX_LABEL_LIMIT {
                     ui.label(format!("indices hidden above {INDEX_LABEL_LIMIT} vertices"));
@@ -405,7 +436,12 @@ struct Triangulation {
 }
 
 impl Triangulation {
-    fn new(name: &'static str, rings: &[Vec<[f64; 2]>]) -> Self {
+    fn new(
+        name: &'static str,
+        rings: &[Vec<[f64; 2]>],
+        refinement: bool,
+        refiner: &mut Refiner,
+    ) -> Self {
         let data: Vec<[f64; 2]> = rings.iter().flat_map(|r| r.iter().copied()).collect();
         let hole_indices: Vec<u32> = rings
             .iter()
@@ -418,6 +454,9 @@ impl Triangulation {
 
         let mut triangles = Vec::new();
         Earcut::new().earcut(data.iter().copied(), &hole_indices, &mut triangles);
+        if refinement {
+            refiner.refine(&mut triangles, &data);
+        }
         let dev = if triangles.is_empty() {
             0.0
         } else {

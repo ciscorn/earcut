@@ -1,3 +1,5 @@
+//! Rust translations of fixtures from `mapbox/earcut/test/fixtures`.
+
 #![allow(dead_code, clippy::approx_constant)]
 #![cfg_attr(rustfmt, rustfmt::skip)]
 
@@ -8,6 +10,7 @@ mod building;
 mod collinear_diagonal;
 mod degenerate;
 mod dude;
+mod earcut;
 mod eberly_3;
 mod eberly_6;
 mod empty_square;
@@ -21,6 +24,7 @@ mod issue111;
 mod issue119;
 mod issue131;
 mod issue142;
+mod issue147;
 mod issue149;
 mod issue16;
 mod issue17;
@@ -33,6 +37,10 @@ mod issue52;
 mod issue83;
 mod outside_ring;
 mod rain;
+mod self_tangent_1;
+mod self_tangent_2;
+mod self_tangent_3;
+mod self_tangent_4;
 mod self_touching;
 mod shared_points;
 mod simplified_us_border;
@@ -53,6 +61,7 @@ mod water3b;
 mod water4;
 mod water_huge;
 mod water_huge2;
+mod water_huge3;
 
 pub use bad_diagonals::BAD_DIAGONALS;
 pub use bad_hole::BAD_HOLE;
@@ -61,6 +70,7 @@ pub use building::BUILDING;
 pub use collinear_diagonal::COLLINEAR_DIAGONAL;
 pub use degenerate::DEGENERATE;
 pub use dude::DUDE;
+pub use earcut::EARCUT;
 pub use eberly_3::EBERLY_3;
 pub use eberly_6::EBERLY_6;
 pub use empty_square::EMPTY_SQUARE;
@@ -74,6 +84,7 @@ pub use issue111::ISSUE111;
 pub use issue119::ISSUE119;
 pub use issue131::ISSUE131;
 pub use issue142::ISSUE142;
+pub use issue147::ISSUE147;
 pub use issue149::ISSUE149;
 pub use issue16::ISSUE16;
 pub use issue17::ISSUE17;
@@ -86,6 +97,10 @@ pub use issue52::ISSUE52;
 pub use issue83::ISSUE83;
 pub use outside_ring::OUTSIDE_RING;
 pub use rain::RAIN;
+pub use self_tangent_1::SELF_TANGENT_1;
+pub use self_tangent_2::SELF_TANGENT_2;
+pub use self_tangent_3::SELF_TANGENT_3;
+pub use self_tangent_4::SELF_TANGENT_4;
 pub use self_touching::SELF_TOUCHING;
 pub use shared_points::SHARED_POINTS;
 pub use simplified_us_border::SIMPLIFIED_US_BORDER;
@@ -106,6 +121,7 @@ pub use water3b::WATER3B;
 pub use water4::WATER4;
 pub use water_huge::WATER_HUGE;
 pub use water_huge2::WATER_HUGE2;
+pub use water_huge3::WATER_HUGE3;
 
 /// All fixtures as `(name, rings)` pairs, sorted by name.
 pub static FIXTURES: &[(&str, &[&[[f64; 2]]])] = &[
@@ -116,6 +132,7 @@ pub static FIXTURES: &[(&str, &[&[[f64; 2]]])] = &[
     ("collinear-diagonal", COLLINEAR_DIAGONAL),
     ("degenerate", DEGENERATE),
     ("dude", DUDE),
+    ("earcut", EARCUT),
     ("eberly-3", EBERLY_3),
     ("eberly-6", EBERLY_6),
     ("empty-square", EMPTY_SQUARE),
@@ -129,6 +146,7 @@ pub static FIXTURES: &[(&str, &[&[[f64; 2]]])] = &[
     ("issue119", ISSUE119),
     ("issue131", ISSUE131),
     ("issue142", ISSUE142),
+    ("issue147", ISSUE147),
     ("issue149", ISSUE149),
     ("issue16", ISSUE16),
     ("issue17", ISSUE17),
@@ -141,6 +159,10 @@ pub static FIXTURES: &[(&str, &[&[[f64; 2]]])] = &[
     ("issue83", ISSUE83),
     ("outside-ring", OUTSIDE_RING),
     ("rain", RAIN),
+    ("self-tangent-1", SELF_TANGENT_1),
+    ("self-tangent-2", SELF_TANGENT_2),
+    ("self-tangent-3", SELF_TANGENT_3),
+    ("self-tangent-4", SELF_TANGENT_4),
     ("self-touching", SELF_TOUCHING),
     ("shared-points", SHARED_POINTS),
     ("simplified-us-border", SIMPLIFIED_US_BORDER),
@@ -161,4 +183,5 @@ pub static FIXTURES: &[(&str, &[&[[f64; 2]]])] = &[
     ("water4", WATER4),
     ("water-huge", WATER_HUGE),
     ("water-huge2", WATER_HUGE2),
+    ("water-huge3", WATER_HUGE3),
 ];

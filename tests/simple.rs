@@ -8,7 +8,7 @@ fn test_default() {
     let hole_indices: &[u32] = &[];
     let mut triangles = vec![];
     earcut.earcut(data.iter().copied(), hole_indices, &mut triangles);
-    assert_eq!(triangles, vec![2, 3, 0, 0, 1, 2]);
+    assert_eq!(triangles, vec![2, 3, 0, 2, 0, 1]);
 }
 
 #[test]
@@ -88,7 +88,7 @@ fn test_steiner_line_hole() {
     let hole_indices: &[u32] = &[3];
     let mut triangles = vec![];
     earcut.earcut(data.iter().copied(), hole_indices, &mut triangles);
-    assert_eq!(triangles.len(), 5 * 3);
+    assert_eq!(triangles, vec![1, 2, 0]);
     assert_eq!(
         deviation(data.iter().copied(), hole_indices, &triangles),
         0.0
@@ -102,7 +102,7 @@ fn test_square() {
     let hole_indices: &[u32] = &[];
     let mut triangles = vec![];
     earcut.earcut(data.iter().copied(), hole_indices, &mut triangles);
-    assert_eq!(triangles, vec![2, 3, 0, 0, 1, 2]);
+    assert_eq!(triangles, vec![2, 3, 0, 2, 0, 1]);
     assert_eq!(
         deviation(data.iter().copied(), hole_indices, &triangles),
         0.0
@@ -116,7 +116,7 @@ fn test_square_u16() {
     let hole_indices: &[u16] = &[];
     let mut triangles = vec![];
     earcut.earcut(data.iter().copied(), hole_indices, &mut triangles);
-    assert_eq!(triangles, vec![2, 3, 0, 0, 1, 2]);
+    assert_eq!(triangles, vec![2, 3, 0, 2, 0, 1]);
     assert_eq!(
         deviation(data.iter().copied(), hole_indices, &triangles),
         0.0
@@ -130,7 +130,7 @@ fn test_square_usize() {
     let hole_indices: &[usize] = &[];
     let mut triangles = vec![];
     earcut.earcut(data.iter().copied(), hole_indices, &mut triangles);
-    assert_eq!(triangles, vec![2, 3, 0, 0, 1, 2]);
+    assert_eq!(triangles, vec![2, 3, 0, 2, 0, 1]);
     assert_eq!(
         deviation(data.iter().copied(), hole_indices, &triangles),
         0.0
@@ -154,7 +154,7 @@ fn test_map_3d_to_2d() {
         hole_indices,
         &mut triangles,
     );
-    assert_eq!(triangles, vec![2, 3, 0, 0, 1, 2]);
+    assert_eq!(triangles, vec![2, 3, 0, 2, 0, 1]);
     assert_eq!(
         deviation(data.iter().map(|v| [v[0], v[1]]), hole_indices, &triangles),
         0.0
@@ -229,7 +229,93 @@ fn test_int_square() {
     let hole_indices: &[u32] = &[];
     let mut triangles: Vec<u32> = vec![];
     earcut.earcut(data.iter().copied(), hole_indices, &mut triangles);
-    assert_eq!(triangles, vec![2, 3, 0, 0, 1, 2]);
+    assert_eq!(triangles, vec![2, 3, 0, 2, 0, 1]);
+}
+
+// Largest supported absolute coordinate (`EarcutI32` domain limit: |coord| <= 2^19).
+const LIM: i32 = 1 << 19;
+
+#[test]
+fn test_int_max_supported_range() {
+    // A square spanning the full supported coordinate box.
+    let data = [[-LIM, -LIM], [LIM, -LIM], [LIM, LIM], [-LIM, LIM]];
+    let mut triangles = Vec::<u32>::new();
+
+    EarcutI32::new().earcut(data, &[], &mut triangles);
+
+    assert_eq!(triangles.len(), 6);
+    assert_eq!(int_deviation(data, &[] as &[u32], &triangles), 0);
+}
+
+#[test]
+fn test_int_max_supported_range_with_hole() {
+    let data = [
+        [-LIM, -LIM],
+        [LIM, -LIM],
+        [LIM, LIM],
+        [-LIM, LIM],
+        [-LIM / 2, -LIM / 2],
+        [LIM / 2, -LIM / 2],
+        [LIM / 2, LIM / 2],
+        [-LIM / 2, LIM / 2],
+    ];
+    let mut triangles = Vec::<u32>::new();
+
+    EarcutI32::new().earcut(data, &[4], &mut triangles);
+
+    assert_eq!(triangles.len(), 8 * 3);
+    assert_eq!(int_deviation(data, &[4], &triangles), 0);
+}
+
+#[test]
+#[should_panic(expected = "out of range")]
+fn test_int_range_over_limit_panics() {
+    // Spanning the full i32 range exceeds the documented [-2^19, 2^19] domain.
+    let data = [
+        [i32::MIN, i32::MIN],
+        [i32::MAX, i32::MIN],
+        [i32::MAX, i32::MAX],
+        [i32::MIN, i32::MAX],
+    ];
+    let mut triangles = Vec::<u32>::new();
+    EarcutI32::new().earcut(data, &[], &mut triangles);
+}
+
+#[test]
+fn test_int_degenerate_line_in_domain() {
+    let data = [[-LIM, 0], [0, 0], [LIM, 0]];
+    let mut triangles = Vec::<u32>::new();
+
+    EarcutI32::new().earcut(data, &[], &mut triangles);
+
+    assert!(triangles.is_empty());
+}
+
+#[test]
+fn test_int_hole_bridge_preserves_rational_intersection() {
+    let outer = [
+        [0, 0],
+        [4, 0],
+        [4, 8],
+        [6, 8],
+        [6, 0],
+        [10, 0],
+        [10, 10],
+        [0, 10],
+    ];
+    let hole = [[7, 3], [7, 6], [9, 6], [9, 3]];
+    let transform = |[x, y]: [i32; 2]| [-3 * x + 5 * y, 4 * x - 7 * y];
+    let data = outer
+        .into_iter()
+        .chain(hole)
+        .map(transform)
+        .collect::<Vec<_>>();
+    let mut triangles = Vec::<u32>::new();
+
+    EarcutI32::new().earcut(data.iter().copied(), &[8], &mut triangles);
+
+    assert_eq!(triangles.len(), 12 * 3);
+    assert_eq!(int_deviation(data, &[8], &triangles), 0);
 }
 
 #[test]
@@ -251,7 +337,7 @@ fn test_square_with_square_hole() {
     assert_eq!(
         triangles,
         vec![
-            0, 4, 7, 5, 4, 0, 3, 0, 7, 5, 0, 1, 2, 3, 7, 6, 5, 1, 2, 7, 6, 6, 1, 2
+            0, 4, 7, 5, 4, 0, 5, 0, 1, 5, 1, 2, 3, 0, 7, 3, 7, 6, 6, 5, 2, 6, 2, 3
         ]
     );
     assert_eq!(
