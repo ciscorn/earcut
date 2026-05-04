@@ -246,6 +246,15 @@ impl<T: Float> Earcut<T> {
         self.data.clear();
         self.data.extend(data);
         triangles_out.clear();
+        self.run(hole_indices, triangles_out);
+    }
+
+    #[deprecated(since = "0.4.10", note = "internal entry point; call `earcut` instead")]
+    pub fn earcut_impl<N: Index>(&mut self, hole_indices: &[N], triangles_out: &mut Vec<N>) {
+        self.run(hole_indices, triangles_out);
+    }
+
+    fn run<N: Index>(&mut self, hole_indices: &[N], triangles_out: &mut Vec<N>) {
         if self.data.len() < 3 {
             return;
         }

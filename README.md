@@ -9,7 +9,7 @@ A Rust port of the [mapbox/earcut](https://github.com/mapbox/earcut) polygon tri
 - Based on the latest earcut 3.0.2 release.
 - Designed to avoid unnecessary memory allocations. Internal buffers and the output index vector can be reused across multiple triangulations.
 - Also provides `earcut::int::EarcutI32` for integer coordinates with exact integer predicates, but it can be slower than the float-based `Earcut` on modern CPUs.
-- An additional module, `utils3d`, can project 3D coplanar polygons onto a 2D plane before triangulation.
+- An additional helper, `utils3d::project3d_to_2d`, projects coplanar 3D polygons onto a 2D plane for use with earcut.
 
 <p align="center">
 <img src="./docs/image.png" width="300">
